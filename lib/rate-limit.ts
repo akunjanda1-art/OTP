@@ -10,7 +10,17 @@ export type RateLimitResult = {
   allowed: boolean;
   remaining: number;
   resetAt: number;
+  retryAfterSec: number;
 };
+
+/**
+ * Default limits per PRD §11.3
+ */
+export const RATE_LIMITS = {
+  perApiKey: Number(process.env.RATE_LIMIT_PER_API_KEY ?? 60), // per minute
+  perPhonePer10min: Number(process.env.RATE_LIMIT_PER_PHONE_PER_10MIN ?? 3),
+  perIp: Number(process.env.RATE_LIMIT_PER_IP ?? 100), // per minute
+} as const;
 
 export function rateLimit(
   key: string,
@@ -21,16 +31,29 @@ export function rateLimit(
   const b = buckets.get(key);
 
   if (!b || b.resetAt < now) {
-    buckets.set(key, { count: 1, resetAt: now + windowMs });
-    return { allowed: true, remaining: limit - 1, resetAt: now + windowMs };
+    const resetAt = now + windowMs;
+    buckets.set(key, { count: 1, resetAt });
+    return {
+      allowed: true,
+      remaining: limit - 1,
+      resetAt,
+      retryAfterSec: Math.ceil(windowMs / 1000),
+    };
   }
 
+  const retryAfterSec = Math.max(1, Math.ceil((b.resetAt - now) / 1000));
+
   if (b.count >= limit) {
-    return { allowed: false, remaining: 0, resetAt: b.resetAt };
+    return { allowed: false, remaining: 0, resetAt: b.resetAt, retryAfterSec };
   }
 
   b.count += 1;
-  return { allowed: true, remaining: limit - b.count, resetAt: b.resetAt };
+  return {
+    allowed: true,
+    remaining: limit - b.count,
+    resetAt: b.resetAt,
+    retryAfterSec,
+  };
 }
 
 // Periodic cleanup
@@ -52,16 +75,17 @@ const ONE_MINUTE = 60 * 1000;
 const TEN_MINUTES = 10 * 60 * 1000;
 
 export function rateLimitApiKey(keyId: string): RateLimitResult {
-  const limit = Number(process.env.RATE_LIMIT_PER_API_KEY ?? 60);
-  return rateLimit(`apikey:${keyId}`, limit, ONE_MINUTE);
+  return rateLimit(`apikey:${keyId}`, RATE_LIMITS.perApiKey, ONE_MINUTE);
 }
 
 export function rateLimitPhone(phone: string, purpose: string): RateLimitResult {
-  const limit = Number(process.env.RATE_LIMIT_PER_PHONE_PER_10MIN ?? 3);
-  return rateLimit(`phone:${phone}:${purpose}`, limit, TEN_MINUTES);
+  return rateLimit(
+    `phone:${phone}:${purpose}`,
+    RATE_LIMITS.perPhonePer10min,
+    TEN_MINUTES,
+  );
 }
 
 export function rateLimitIp(ip: string): RateLimitResult {
-  const limit = Number(process.env.RATE_LIMIT_PER_IP ?? 100);
-  return rateLimit(`ip:${ip}`, limit, ONE_MINUTE);
+  return rateLimit(`ip:${ip}`, RATE_LIMITS.perIp, ONE_MINUTE);
 }
